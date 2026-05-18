@@ -14,16 +14,11 @@ jobs:
       UPSTREAM_REPO: xingkongliang/skills-manager
 
     steps:
-      - name: Load AUR SSH key
-        uses: webfactory/ssh-agent@v0.9.1
+      - uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
-      - name: Trust AUR host key
-        run: ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
-
-      - name: Test AUR SSH connection
-        run: ssh -T -o BatchMode=yes aur@aur.archlinux.org
+      - run: ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
 
       - name: Determine latest upstream version
         id: upstream
