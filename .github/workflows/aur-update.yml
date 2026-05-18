@@ -48,10 +48,22 @@ jobs:
           fi
           mkdir -p /root/.ssh
           chmod 700 /root/.ssh
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > /root/.ssh/id_aur
+          # Preserve exact key bytes; strip accidental Windows CR if pasted from Notepad.
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | sed 's/\r$//' > /root/.ssh/id_aur
           chmod 600 /root/.ssh/id_aur
           ssh-keyscan aur.archlinux.org >> /root/.ssh/known_hosts
           chmod 600 /root/.ssh/known_hosts
+          if ! ssh-keygen -y -f /root/.ssh/id_aur >/dev/null 2>&1; then
+            echo "::error::AUR_SSH_PRIVATE_KEY is not a valid OpenSSH private key."
+            exit 1
+          fi
+          echo "CI key fingerprint (compare with your local ~/.ssh/aur.pub):"
+          ssh-keygen -lf <(ssh-keygen -y -f /root/.ssh/id_aur)
+
+      - name: Test AUR SSH connection
+        run: |
+          set -euo pipefail
+          ssh -T -i /root/.ssh/id_aur -o IdentitiesOnly=yes -o BatchMode=yes aur@aur.archlinux.org
 
       - name: Determine latest upstream version
         id: upstream
