@@ -1,0 +1,122 @@
+name: Update AUR package
+
+on:
+  schedule:
+    # Check upstream releases daily at 06:00 UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  aur-sync:
+    name: Sync PKGBUILD with upstream release
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      AUR_REPO: ssh://aur@aur.archlinux.org/skills-manager.git
+      GIT_SSH_COMMAND: >-
+        ssh -i /root/.ssh/id_aur
+        -o StrictHostKeyChecking=yes
+        -o IdentitiesOnly=yes
+        -o ServerAliveInterval=15
+        -o ServerAliveCountMax=4
+      UPSTREAM_REPO: xingkongliang/skills-manager
+
+    steps:
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm git base-devel pacman-contrib openssh curl jq
+
+      - name: Create build user
+        run: |
+          set -euo pipefail
+          useradd -m builduser
+          echo 'builduser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+
+      - name: Configure SSH
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${AUR_SSH_PRIVATE_KEY:-}" ]]; then
+            echo "::error::Set repository secret AUR_SSH_PRIVATE_KEY (AUR SSH private key)."
+            exit 1
+          fi
+          mkdir -p /root/.ssh
+          chmod 700 /root/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > /root/.ssh/id_aur
+          chmod 600 /root/.ssh/id_aur
+          ssh-keyscan aur.archlinux.org >> /root/.ssh/known_hosts
+          chmod 600 /root/.ssh/known_hosts
+
+      - name: Determine latest upstream version
+        id: upstream
+        run: |
+          set -euo pipefail
+          tag=$(curl -fsSL "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name')
+          if [[ -z "$tag" || "$tag" == "null" ]]; then
+            echo "::error::Could not resolve latest upstream release tag."
+            exit 1
+          fi
+          pkgver="${tag#v}"
+          echo "pkgver=$pkgver" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream release: v${pkgver}"
+
+      - name: Clone AUR repository
+        run: |
+          set -euo pipefail
+          git clone "$AUR_REPO" "$GITHUB_WORKSPACE/aur"
+
+      - name: Check if update is needed
+        id: check
+        working-directory: ${{ github.workspace }}/aur
+        env:
+          PKGVER: ${{ steps.upstream.outputs.pkgver }}
+        run: |
+          set -euo pipefail
+          current=$(grep -E '^pkgver=' PKGBUILD | cut -d= -f2)
+          if [[ "$current" == "$PKGVER" ]]; then
+            echo "Already up to date (${current})."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Update available: ${current} -> ${PKGVER}"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update PKGBUILD
+        if: steps.check.outputs.skip != 'true'
+        working-directory: ${{ github.workspace }}/aur
+        env:
+          PKGVER: ${{ steps.upstream.outputs.pkgver }}
+        run: |
+          set -euo pipefail
+          sed -i "s/^pkgver=.*/pkgver=${PKGVER}/" PKGBUILD
+          sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
+
+      - name: Refresh checksums and metadata
+        if: steps.check.outputs.skip != 'true'
+        env:
+          AUR_DIR: ${{ github.workspace }}/aur
+        run: |
+          set -euo pipefail
+          chown -R builduser:builduser "$AUR_DIR"
+          su - builduser -c "cd $AUR_DIR && updpkgsums"
+          su - builduser -c "cd $AUR_DIR && makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Commit and push changes
+        if: steps.check.outputs.skip != 'true'
+        working-directory: ${{ github.workspace }}/aur
+        env:
+          PKGVER: ${{ steps.upstream.outputs.pkgver }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add PKGBUILD .SRCINFO
+          git commit -m "chore(aur): bump to ${PKGVER}"
+          git push origin HEAD
