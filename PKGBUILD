@@ -1,4 +1,4 @@
-# Maintainer: jochem <aur@local>
+# Maintainer: Jochem Kuipers <jochem@kuipers.cc>
 pkgname=skills-manager
 pkgver=1.20.0
 pkgrel=1
